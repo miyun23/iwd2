@@ -1,0 +1,55 @@
+import { sql } from "drizzle-orm";
+import { pgTable, text, varchar, decimal, integer, jsonb } from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod";
+
+export const students = pgTable("students", {
+  id: varchar("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  intake: text("intake").notNull(),
+  programme: text("programme").notNull(),
+  cgpa: decimal("cgpa", { precision: 3, scale: 2 }).notNull(),
+  credits: integer("credits").notNull().default(0),
+  subjects: jsonb("subjects").default([]),
+  createdAt: text("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const subjects = pgTable("subjects", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  grade: text("grade"),
+  status: text("status").notNull(),
+  studentId: text("student_id").references(() => students.id),
+});
+
+export const insertStudentSchema = createInsertSchema(students).omit({
+  createdAt: true,
+});
+
+export const insertSubjectSchema = createInsertSchema(subjects).omit({
+  id: true,
+});
+
+export type InsertStudent = z.infer<typeof insertStudentSchema>;
+export type Student = typeof students.$inferSelect;
+export type InsertSubject = z.infer<typeof insertSubjectSchema>;
+export type Subject = typeof subjects.$inferSelect;
+
+export interface StudentWithSubjects extends Student {
+  subjects: Subject[];
+}
+
+export interface DashboardMetrics {
+  totalStudents: number;
+  deansListCount: number;
+  probationCount: number;
+  averageCGPA: number;
+}
+
+export interface PerformanceData {
+  deansListStudents: StudentWithSubjects[];
+  probationStudents: StudentWithSubjects[];
+  goodStandingStudents: StudentWithSubjects[];
+}
