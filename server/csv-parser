@@ -1,0 +1,186 @@
+import { readFileSync } from "fs";
+import { type InsertStudent } from "@shared/schema";
+
+interface CSVRecord {
+  Index: string;
+  ID: string;
+  Name: string;
+  Intake: string;
+  SubjectCode: string;
+  SubjectName: string;
+  Grade: string;
+  Comment: string;
+  Programme: string;
+  Email: string;
+}
+
+// Grade to CGPA conversion mapping
+const gradeToPoints: Record<string, number> = {
+  'A+': 4.0,
+  'A': 4.0,
+  'A-': 3.7,
+  'B+': 3.3,
+  'B': 3.0,
+  'B-': 2.7,
+  'C+': 2.3,
+  'C': 2.0,
+  'C-': 1.7,
+  'D+': 1.3,
+  'D': 1.0,
+  'F': 0.0,
+  'XF': 0.0
+};
+
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  result.push(current);
+  return result;
+}
+
+export function parseStudentCSV(): { students: InsertStudent[], subjects: Array<{ studentId: string, code: string, name: string, grade: string, status: string }> } {
+  try {
+    const csvContent = readFileSync('attached_assets/2025-06-06 IWD Assignment1_1755490693162.csv', 'utf-8');
+    const lines = csvContent.split('\n').filter(line => line.trim());
+    
+    // Skip header line
+    const dataLines = lines.slice(1);
+    
+    const studentMap = new Map<string, {
+      student: InsertStudent,
+      subjects: Array<{ code: string, name: string, grade: string, status: string }>
+    }>();
+    
+    const subjects: Array<{ studentId: string, code: string, name: string, grade: string, status: string }> = [];
+    
+    for (const line of dataLines) {
+      const fields = parseCSVLine(line);
+      if (fields.length < 10) continue;
+      
+      const record: CSVRecord = {
+        Index: fields[0]?.trim() || '',
+        ID: fields[1]?.trim() || '',
+        Name: fields[2]?.trim() || '',
+        Intake: fields[3]?.trim() || '',
+        SubjectCode: fields[4]?.trim() || '',
+        SubjectName: fields[5]?.trim() || '',
+        Grade: fields[6]?.trim() || '',
+        Comment: fields[7]?.trim() || '',
+        Programme: fields[8]?.trim() || '',
+        Email: fields[9]?.trim() || ''
+      };
+      
+      if (!record.ID || !record.Name || !record.Email) continue;
+      
+      // Map programme names
+      let mappedProgramme = record.Programme === 'UEIS' ? 'Bachelor of Information Systems (Hons)' : record.Programme;
+      
+      if (!studentMap.has(record.ID)) {
+        studentMap.set(record.ID, {
+          student: {
+            id: record.ID,
+            name: record.Name,
+            email: record.Email,
+            intake: record.Intake,
+            programme: mappedProgramme,
+            cgpa: '0.00', // Will calculate later
+            credits: 0 // Will calculate later
+          },
+          subjects: []
+        });
+      }
+      
+      const studentData = studentMap.get(record.ID)!;
+      
+      // Add subject if it exists
+      if (record.SubjectCode && record.SubjectName) {
+        const status = getSubjectStatus(record.Grade, record.Comment);
+        studentData.subjects.push({
+          code: record.SubjectCode,
+          name: record.SubjectName,
+          grade: record.Grade,
+          status: status
+        });
+        
+        subjects.push({
+          studentId: record.ID,
+          code: record.SubjectCode,
+          name: record.SubjectName,
+          grade: record.Grade,
+          status: status
+        });
+      }
+    }
+    
+    // Calculate CGPA and credits for each student
+    const students: InsertStudent[] = [];
+    
+    for (const [studentId, data] of studentMap) {
+      const completedSubjects = data.subjects.filter(s => 
+        s.grade && 
+        s.grade !== 'e' && 
+        s.grade !== 'ct' && 
+        s.grade !== 'n' && 
+        s.grade !== '1' &&
+        s.grade !== '0.5' &&
+        s.status === 'completed'
+      );
+      
+      let totalPoints = 0;
+      let totalCredits = 0;
+      
+      for (const subject of completedSubjects) {
+        const points = gradeToPoints[subject.grade] || 0;
+        const credits = getSubjectCredits(subject.code);
+        totalPoints += points * credits;
+        totalCredits += credits;
+      }
+      
+      const cgpa = totalCredits > 0 ? (totalPoints / totalCredits) : 0;
+      
+      data.student.cgpa = cgpa.toFixed(2);
+      data.student.credits = totalCredits;
+      
+      students.push(data.student);
+    }
+    
+    return { students, subjects };
+    
+  } catch (error) {
+    console.error('Error parsing CSV:', error);
+    return { students: [], subjects: [] };
+  }
+}
+
+function getSubjectStatus(grade: string, comment: string): string {
+  if (grade === 'e') return 'exempted';
+  if (grade === 'ct') return 'credit_transferred';
+  if (grade === 'n') return 'next_semester';
+  if (grade === '1') return 'retaking';
+  if (grade === '0.5') return 'current_semester';
+  if (grade === 'v') return 'just_completed';
+  if (grade === 'x') return 'failed';
+  if (gradeToPoints[grade] !== undefined) return 'completed';
+  return 'pending';
+}
+
+function getSubjectCredits(subjectCode: string): number {
+  // Most subjects are 3-4 credits, some special ones might be different
+  if (subjectCode.includes('4N')) return 4;
+  return 3;
+}
